@@ -3,10 +3,10 @@
 VPATH=@srcdir@:
 OBJS=
 MODDIR=Public.pmod/Protocols.pmod/
-MODNAME=Jabber
+MODNAME=XMPP
 MODULE_LDFLAGS=@LDFLAGS@ @LIBS@
-MODULE_DIR_NAME=Public_Protocols_Jabber
-MODULE_NAME=Public.Protocols.Jabber
+MODULE_DIR_NAME=Public_Protocols_XMPP
+MODULE_NAME=Public.Protocols.XMPP
 MODULE_LICENSE=LGPL
 
 CONFIG_HEADERS=@CONFIG_HEADERS@

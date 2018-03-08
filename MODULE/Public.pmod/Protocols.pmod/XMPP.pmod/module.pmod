@@ -1,4 +1,4 @@
-//! A module for communicating using the Jabber Protocol
+//! A module for communicating using the XMPP Protocol
 
 //!
 constant __version = "1.2";

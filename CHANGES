@@ -1,7 +1,14 @@
+Version 1.4:
+- Module name is now XMPP
+- Support stream feature negotiation for starttls, sasl (PLAIN only ATM), bind and session
+- Pike 8.0 support
+- More reliable I/O
+- Added connect callback
+
 Version 1.3: 
 - Fix for newer versions of Parser.XML (Pike 7.8/7.9)
 - Tested support for SSL connections.
-- Support for Jabber usernames differing from server name.
+- Support for XMPP usernames differing from server name.
 - Removed private members in favor of protected, for ease of extension.
 - Added example code.
 
@@ -9,7 +16,7 @@ Version 1.2: Fix for newer versions of Parser.XML.
 
 Version 1.1: Fix for newer/older versions of autoheader.
 
-Version 1.0: Initial Release of the Jabber Client module
+Version 1.0: Initial Release of the XMPP Client module
 
 Supports Plaintext authentication, presence, roster management and 
 send/receive messaging in an asynchronous environment using callbacks. 

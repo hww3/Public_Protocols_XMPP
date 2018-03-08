@@ -1,24 +1,36 @@
-//! a client for the Jabber protocol
+//! a client for the XMPP protocol
 
-import Public.Protocols.Jabber;
+import Public.Protocols.XMPP;
 
 #if JABBER_DEBUG
-#define WERROR(X) werror("Jabber.client():" + X)
+#define WERROR(X) werror("XMPP.client():" + X)
 #else
 #define WERROR(X)
 #endif
 
+#if JABBER_IO_DEBUG
+#define JABBER_IO_WERROR(X) werror("XMPP.client(IO):" + X)
+#else
+#define JABBER_IO_WERROR(X)
+#endif
+
 //! Context for SSL connections
-SSL.context ssl_ctx;
+SSL.Context ssl_ctx;
 
 int is_background;
 string stream;
 string url;
 int sslcon=0;
-string server;
+string server, host; // server = url portion, host = resolved srv hostname.
 int port;
-string user,password;
+string user;
+string password;
+
 string sessionid="";
+string jid;
+int negotiation_complete = 0;
+string selected_mechanism;
+multiset attempted_mechanisms = (<>);
 
 mapping presence=([]);
 mapping roster=([]);
@@ -34,13 +46,14 @@ protected function unsubscribed_callback;
 protected function presence_callback;
 protected function disconnect_callback;
 protected function roster_callback;
+protected function connect_callback;
 
-protected string _client_name="PikeJabber";
+protected string _client_name;
 
 protected string write_buf = "";
 
-//! sets the client name to be used in the connection to the Jabber server.
-//! defaults to "PikeJabber".
+//! sets the client name to be used in the connection to the XMPP server.
+//! defaults to a random UUID.
 void set_client_name(string c)
 {
    if(stringp(c))
@@ -55,7 +68,7 @@ string get_client_name()
 
 //! sets the function to be called when a session is disconnected.
 //! 
-//! the callback function does not receive any arguments.
+//! the callback receives the client as an argument.
 void set_disconnect_callback(function f)
 {
   if(functionp(f))
@@ -63,6 +76,18 @@ void set_disconnect_callback(function f)
      disconnect_callback=f;
   }
 }
+
+//! sets the function to be called when a session is connected.
+//!
+//! the callback receives the client as an argument.
+void set_connect_callback(function f) 
+{
+  if(functionp(f))
+  {
+    connect_callback = f;
+  }
+}
+
 
 //! sets the function to be called when a user's precence info changes.
 //! 
@@ -104,7 +129,7 @@ void set_message_callback(function f)
 //! sets the function to be called when a subscribe request is received.
 //! 
 //! the callback function will receive a string containing the
-//! Jabber ID making the request. the function should return a boolean
+//! XMPP ID making the request. the function should return a boolean
 //! indicating whether the request should be accepted (true=accept)
 void set_subscribe_callback(function f)
 {
@@ -117,7 +142,7 @@ void set_subscribe_callback(function f)
 //! sets the function to be called when an unsubscribe request is received.
 //! 
 //! the callback function will receive a string containing the
-//! Jabber ID making the request. the function should return a boolean
+//! XMPP ID making the request. the function should return a boolean
 //! indicating whether the request should be accepted (true=accept)
 void set_unsubscribe_callback(function f)
 {
@@ -130,7 +155,7 @@ void set_unsubscribe_callback(function f)
 //! sets the function to be called when a subscribed notification is received.
 //! 
 //! the callback function will receive a string containing the
-//! Jabber ID making the request.
+//! XMPP ID making the request.
 void set_subscribed_callback(function f)
 {
   if(functionp(f))
@@ -142,7 +167,7 @@ void set_subscribed_callback(function f)
 //! sets the function to be called when a unsubscribed notification is received.
 //! 
 //! the callback function will receive a string containing the
-//! Jabber ID making the request.
+//! XMPP ID making the request.
 void set_unsubscribed_callback(function f)
 {
   if(functionp(f))
@@ -155,6 +180,12 @@ void set_unsubscribed_callback(function f)
 void clear_disconnect_callback()
 {
    disconnect_callback=0;
+}
+
+//! clears any connect callback
+void clear_connect_callback() 
+{
+  connect_callback = 0;
 }
 
 //! clears any presence callback
@@ -224,10 +255,10 @@ protected array decode_url(string url) {
   matches=sscanf(url, "%s://%s", _prot, _server);
  
   if(matches!=2) 
-    error("jabber url " + url + " invalid.");
+    error("xmpp url " + url + " invalid.");
 
-  if(_prot=="jabbers") _use_ssl=1;
-  else if(_prot!="jabber") 
+  if(_prot=="xmpps") _use_ssl=1;
+  else if(_prot!="xmpp") 
     error("unknown protocol " + _prot + ".");
 
   matches=sscanf(_server, "%s@%s", _user, tmp);
@@ -251,77 +282,117 @@ protected array decode_url(string url) {
 
 }
 
-//! create a new client connection to server url, using a jabber url
+//! create a new client connection to server url, using a xmpp url
 //! 
 //! following creation, there will be a connection to the server but
 //! the session will not yet be initiated. see @[begin] and @[authenticate]
 //!
 //! @param ctx
-//!   an optional context for an SSL connection to the Jabber server.  
+//!   an optional context for an SSL connection to the XMPP server.  
 //!
 //! @example
-//!  jabber://user:pass@@jabberserver.fqdn
-void create(string url, void|SSL.context ctx)
+//!  xmpp://user:pass@@xmppserver.fqdn
+void create(string url, void|SSL.Context ctx)
 {
   string _server,_user,_password;
   int _ssl,_port;
+  attempted_mechanisms = (<>);
+
   [_server, _port, _user, _password, _ssl]=decode_url(url);
 
-    conn=Stdio.File();
-    WERROR(sprintf("connecting to %O on port %O\n", _server, _port));
-    if(!conn->connect(_server, _port))
-      error("unable to connect to jabber server at " + _server + " port " + 
-      _port + ".");
+      if(!ctx)
+      ctx = SSL.Context();
 
+    ssl_ctx = ctx;
+  server = _server;
+  object client = Protocols.DNS.client();
+  string pdu =  client->mkquery("_xmpp-client._tcp." + _server, Protocols.DNS.C_IN, Protocols.DNS.T_SRV);
+  mapping result = client->do_sync_query(pdu);
+//  werror("SRV record for " + _server + ": %O", result);
+
+  if(result && result->an) {
+    mapping srv = result->an[0];
+    host = srv->target;
+    port = srv->port;    
+    
+  }
+  else {
+    throw(Error.Generic("Unable to find a server for " + _server + ".\n"));
+  }
+    conn=Stdio.File();
+    conn->set_blocking();
+    WERROR(sprintf("connecting to %O on port %O\n", host, (int)port));
+    if(!conn->connect("45.76.82.177" /*server*/, (int)port))
+      throw(Error.Generic("unable to connect to xmpp server at " + host + " port " + port + ".\n"));
+  WERROR("connected.\n");
   if(_ssl) // are we using ssl?
   {
     WERROR("using ssl.\n");
     object _c;
     _c = conn;
 
-    if(!ctx)
-      ctx = SSL.context();
-
-    ssl_ctx = ctx;
-
-    conn = SSL.sslfile(_c, ctx, 1, 1);
+    conn = SSL.File(_c, ctx);
+    conn->set_blocking();
+    if(!conn->connect())
+      throw(Error.Generic("Unable to initiate SSL connection.\n"));
     sslcon = 1;
   }
 
   conn->set_close_callback(conn_closed);
 
   user=_user;
-  port=_port;
-  server=_server;
   password=_password;
 
 }
 
-//! sets the jabber identity of the client.
+void do_starttls() {
+      WERROR("using ssl.\n");
+    object _c;
+    _c = conn;
+
+    conn = SSL.File(_c, ssl_ctx);
+    conn->set_blocking();
+    if(!conn->connect())
+      throw(Error.Generic("Unable to initiate SSL connection.\n"));
+    sslcon = 1;
+
+    conn->set_close_callback(conn_closed);
+    call_out(begin, 0);
+}
+
+//! sets the xmpp identity of the client.
 //! normally this information is automatically pulled from
-//! the jabber connect url, however in situations where the server
-//! name is different from the jabber domain name, this method
-//! may be used to specify the full jabber user identity.
+//! the xmpp connect url, however in situations where the server
+//! name is different from the xmpp domain name, this method
+//! may be used to specify the full xmpp user identity.
 //!
-//! @param jabber_id
-//!   the jabber identity, in the form of username or username@somdomain
-void set_user_identity(string jabber_id)
+//! @param xmpp_id
+//!   the xmpp identity, in the form of username or username@somdomain
+void set_user_identity(string xmpp_id)
 {
-  if(search(jabber_id, "@") == -1)
+  if(search(xmpp_id, "@") == -1)
   {
-    user = jabber_id;
+    user = xmpp_id;
   }
   else
   {
-     sscanf(jabber_id, "%s@%s", user, server);
+     sscanf(xmpp_id, "%s@%s", user, server);
   }
 
   WERROR("USER set to " + user + ".\n");
-  WERROR("HOST set to " + host + ".\n");
+  WERROR("HOST set to " + server + ".\n");
 
 }
 
-//! creates a new jabber session and sets the mode to blocking.
+void set_username(string _username) {
+  user = _username;
+}
+
+void set_password(string _password) {
+  password = _password;
+}
+
+//! creates a new xmpp session and sets the mode to blocking.
 //! 
 void begin()
 {
@@ -333,7 +404,7 @@ void begin()
 protected void conn_closed()
 {
   if(disconnect_callback)
-    call_function(disconnect_callback);
+    call_function(disconnect_callback, this);
 }
 
 protected string make_stream(string s)
@@ -365,6 +436,7 @@ protected object|string check_for_errors(string s)
   object node;
   mixed e;
   s = make_stream(s);
+  JABBER_IO_WERROR("parsing " + s + "\n");
   e=catch(
     node=Parser.XML.NSTree.parse_input(s)
   );
@@ -389,6 +461,9 @@ protected void|int low_checkforerrors(object node)
   {
     _error= node->value_of_node();
     return Parser.XML.NSTree.STOP_WALK; 
+  } else if (node->get_tag_name() == "iq" && node->get_attributes()->type == "error") {
+    _error= node->value_of_node();
+    return Parser.XML.NSTree.STOP_WALK;
   }
 }
 
@@ -497,7 +572,7 @@ int request_unsubscribe(string who)
 //! @param status
 //!   an optional string containing a status message
 //! @param priority
-//!   an optional priority setting (see Jabber spec for details)
+//!   an optional priority setting (see XMPP spec for details)
 //! @note
 //!   we don't use the cdata in the text because some clients
 //!   don't know what to do with that. we should probably complain,
@@ -529,17 +604,14 @@ int set_presence(int show, string|void status, int|void priority)
 }
 
 //! right now we only do plaintext authentication.
-//! will use user/password information gleaned from the jabber url if
+//! will use user/password information gleaned from the xmpp url if
 //! authentication information is not provided.
-void authenticate(string|void u, string|void p)
+void authenticate()
 {
   set_background_mode(0);
 
-  if(!(u && p)) // we should use the gleaned information.
-  {
-     u=user;
-     p=password;
-  }
+  string u = user;
+  string p = password;
 
   string msg="<iq id='auth1' type='get'>\n"
       "    <query xmlns='jabber:iq:auth'>\n"
@@ -548,78 +620,93 @@ void authenticate(string|void u, string|void p)
       "  </iq>";
 
   send_msg(msg);
-
-  string rslt=conn->read(2048,1);
-
-//  werror("read1: " + rslt+"\n\n");
-  mixed e=check_for_errors(rslt);
-  if(stringp(e))
-    error("Received error: " + e + "\n");
-  object node=e;
-//  object node=Parser.XML.NSTree->parse_input(make_stream(rslt));
-
+  object node = sync_await_response();
+  werror("node: %O\n", node);
 //  WERROR(Parser.XML.NSTree->visualize(node));
 
   msg="<iq id='auth2' type='set'>"
    "<query xmlns='jabber:iq:auth'>"
-   " <username>" + u + "</username>"
-   " <password>" + p + "</password>"
+   " <username>" + u + "</username>" +
+   (!selected_mechanism?(" <password>" + p + "</password>"):"") +
    " <resource>" + _client_name + "</resource>"
    "</query>"
    "</iq>";
 
   send_msg(msg);
 
-  rslt=conn->read(2048,1);
- // werror("read2: " + rslt+"\n\n");
-
-  e=check_for_autherrors(rslt);
-
-  if(e)
-    error("Received error: %O\n", e);
-
+  node = sync_await_response();
+  werror("node: %O\n", node);
   set_background_mode(1);
 
+}
+
+object sync_await_response() {
+  set_background_mode(0);
+  string rslt=conn->read(2048,1);
+
+  JABBER_IO_WERROR("read1: " + rslt+"\n\n");
+  mixed e=check_for_errors(rslt);
+  if(stringp(e))
+    error("Received error: " + e + "\n");
+  object node=e;
+//  object node=Parser.XML.NSTree->parse_input(make_stream(rslt));
+  foreach(node->get_children();; object n)
+    if(n->get_tag_name() == "stream")
+      return n;
+  else return 0;
 }
 
 //!
 void disconnect()
 {
+   set_background_mode(0);
    string msg="</stream:stream>\n";
-   send_msg(msg);
-   conn->close();
-   this->destroy();
+   send_msg(msg, 1);
+
+   if(conn->is_open()) conn->close();
 }
 
 //!
 void get_new_session()
 {
+  set_background_mode(0);
   string msg="<stream:stream\n"
              "  to='" + server + "'\n"
+             "  version='1.0'\n"
+             "  xml:lang='en'\n"
              "  xmlns='jabber:client'\n"
              "  xmlns:stream='http://etherx.jabber.org/streams'>\n";  
-  send_msg(msg);
+  send_msg(msg, 1);
 
   string rslt=conn->read(2048,1);
-//  werror("read3: %O\n", rslt);  
-
+  WERROR("Read " + rslt + "\n");
+  WERROR("parsing\n");
   object node;
   mixed e = catch(
     node = Parser.XML.NSTree->parse_input(rslt + "</stream:stream>")
   );
   if(e) { throw(Error.Generic(sprintf("error parsing stream: %O\n", rslt)));}
+  WERROR("Node: " + sprintf("%O", node) + "\n");
   parse_stream(node);
-  stream=rslt;
+  //stream=rslt;
   return;
 }
 
 protected int low_parse_stream(object n)
 {
-  if(n->get_tag_name()=="stream")
+  string name = n->get_tag_name();
+  WERROR("stream received tag " + name + "\n");
+  if(name=="stream")
   {
+    if(!stream) {
+      n->replace_children(({}));
+      stream = replace(n->render_xml(), "/>", ">");
+    }
     mapping a=n->get_attributes();
     if(!a->id)     return !Parser.XML.NSTree.STOP_WALK;  
     sessionid=a->id;
+    // we may have some negotiation messages, so let's check for them
+    n->iterate_children(low_low_read_message);
     return Parser.XML.NSTree.STOP_WALK;  
   }
 }
@@ -630,10 +717,10 @@ protected void parse_stream(object n)
     error("Invalid stream received from server.\n");
 }
 
-
-//! sets the jabber client to optionally operate in callback mode
+//! sets the xmpp client to optionally operate in callback mode
 void set_background_mode(int i)
 {
+  if(!conn->is_open()) throw(Error.Generic("connection is closed. unable to modify background mode.\n"));
   is_background = (i?1:0);
    if(i)
    {
@@ -650,7 +737,6 @@ void set_background_mode(int i)
         write_buf = "";
       }
    }
-
 }
 
 protected void low_read_message(int id, string data)
@@ -673,13 +759,30 @@ protected void low_read_message(int id, string data)
   }
 }
 
+protected mixed get_type_registry(object node) {
+  return 0;
+}
+
 protected int low_low_read_message(object node)
 {
+   mixed type_registry;
    string type=node->get_tag_name();
 
    WERROR("got " + type +" message\n");
 
-   if(type=="message") // we have a message incoming to us.
+   if(type=="features") // we have negotiating to do
+   {
+      array kids = node->get_children();
+      if(!kids || !sizeof(kids))
+      {
+        negotiation_complete = 1;
+        set_background_mode(1);
+        if(connect_callback) connect_callback(this);
+      }
+      else negotiate_features(kids);
+   }
+
+   else if(type=="message") // we have a message incoming to us.
    {
       mapping msg=([]);
       msg->timestamp=time();
@@ -726,6 +829,9 @@ protected int low_low_read_message(object node)
       low_parse_iq(node, a);
       WERROR("got iq data from " + sprintf("%O", a) + "\n");
   
+   } 
+   else if((type_registry = get_type_registry(node))) {
+      type_registry->handle_message(node, this);
    }
    else 
    {
@@ -766,7 +872,7 @@ protected int low_parse_iq(object node, mapping a)
        WERROR("got a query\n");
        switch(node[0]->get_ns())
        {
-         case "jabber:iq:roster":
+         case "xmpp:iq:roster":
            if(a->type=="set")
            {
              WERROR("working with a set roster query\n");
@@ -799,6 +905,141 @@ protected int low_parse_iq(object node, mapping a)
     return 1;
 }
 
+protected void negotiate_features(array features) {
+  array ordered_features = ({});
+
+  // TODO be more sophisticated about this.
+  foreach(features;; object feature) {
+    string name = feature->get_tag_name();
+    if(name == "starttls") ordered_features = ({feature}) + ordered_features;
+    else ordered_features += ({feature});
+  }
+  foreach(ordered_features;; object feature) {
+    string name = feature->get_tag_name();
+    WERROR("preparing to negotiate " + name + "\n");
+    switch(name) {
+      case "mechanisms":
+        negotiate_mechanisms(feature->get_children());
+        return;
+        break;
+      case "bind":
+        bind_resource();
+        break;
+      case "session": 
+        request_session();
+        break;
+      case "starttls":
+        starttls();
+        return; // starttls basically starts the whole shebang over.
+        break;
+      default:
+        WERROR("unknown feature " + name + "\n");
+    }
+  }
+  negotiation_complete = 1; // TODO be more sophisticated about knowing when we're actually done.
+  set_background_mode(1);
+  if(connect_callback) 
+     connect_callback(this);
+}
+
+int id = 1;
+protected string gen_id() {
+  return "id" + id++ + time() + "" ;
+}
+
+protected void request_session() {
+  send_msg("<iq id='sess_" + gen_id() + "' type='set' to='" + server + "'>"
+           "<session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></iq>", 1);
+
+  object r = sync_await_response();
+
+  foreach(r->get_children();; object node) {
+    if(node->get_tag_name() == "iq" && node->get_attributes()->type == "result") {
+      sessionid = node->get_attributes()->id;
+    }
+  }
+
+}
+
+protected void bind_resource() {
+  send_msg("<iq id='" + gen_id() + "' type='set'>"
+        "<bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'>"
+         "<resource>" + (_client_name||(string)Standards.UUID.make_version4()) + "</resource>"
+        "</bind>"
+      "</iq>", 1);
+
+  object r = sync_await_response();
+  foreach(r->get_children();; object node) {
+    if(node->get_tag_name() == "iq" && node->get_attributes()->type == "result") {
+      foreach(node->get_children();; object res) {
+        if(res->get_tag_name() == "bind") {
+          foreach(res->get_children();; object j) {
+            if(j->get_tag_name() == "jid") {
+              jid = j->value_of_node();
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if(!jid) throw(Error.Generic("bind resource failed.\n"));
+  WERROR("JID: " + jid + "\n");
+}
+
+protected int(0..1) negotiate_mechanisms(array opts) {
+  selected_mechanism = 0;
+  multiset valid_mechanisms = (<"PLAIN">);
+  foreach(opts;; object opt) {
+    if(opt->get_tag_name() != "mechanism") 
+      throw(Error.Generic("Expected tag named mechanism, got " + opt->get_tag_name() + "\n"));
+    string mechanism = opt->value_of_node();
+    WERROR("mechanism: " + mechanism + "\n");
+    if(attempted_mechanisms[mechanism]) { 
+      WERROR("skipping " + mechanism + "\n"); 
+      continue; 
+    }
+    if(valid_mechanisms[mechanism]) { // TODO primitive... we stop at the first hit.
+      selected_mechanism = mechanism;
+      attempted_mechanisms[selected_mechanism] = 1;
+    }
+}
+   if(!selected_mechanism) {
+     throw(Error.Generic("Unable to agree on an authentication mechanism.\n"));
+   }
+
+   if(selected_mechanism == "PLAIN") {
+     WERROR("sending PLAIN for password: " + password + "\n");
+     send_msg("<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='" + selected_mechanism + "'>" +
+        MIME.encode_base64("\0" + user + "\0" + password)   + "</auth>", 1);
+     object r = sync_await_response();
+      array children = r->get_children();
+  foreach(children;; object node) {
+    if(node->get_tag_name() == "success")
+    {
+       call_out(begin, 0);
+       return 0;	
+    }
+}
+   }
+   else
+     send_msg("<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='" + selected_mechanism + "'/>", 1);
+
+}
+
+protected void starttls() {
+  send_msg("<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>", 1);
+  object r = sync_await_response();
+  array children = r->get_children();
+  foreach(children;; object node) {
+    if(node->get_tag_name() == "proceed")
+    {
+      do_starttls();
+      return;
+    }
+  }
+  throw(Error.Generic("Never got proceeed from server for starttls.\n"));
+}
 
 protected void handle_unsubscribe(string who)
 {
@@ -856,11 +1097,12 @@ protected void low_write_message(mixed id)
     if(w < sizeof(write_buf))
       write_buf = write_buf[w..];
     else write_buf = "";
-  WERROR("write " + w + " bytes of data.\n");
+//if(w)  WERROR("write " + w + " bytes of data.\n");
 }
 
-protected void send_msg(string msg)
+protected void send_msg(string msg, int|void force)
 {
+  if(!force && !negotiation_complete) throw(Error.Generic("Cannot send message " + msg + " until negotiation is complete.\n"));
   if(is_background)
   {
     write_buf += msg;
