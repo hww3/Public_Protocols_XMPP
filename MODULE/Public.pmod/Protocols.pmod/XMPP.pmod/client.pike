@@ -397,7 +397,6 @@ void set_password(string _password) {
 void begin()
 {
   get_new_session();
-
   set_background_mode(1);
 }
 
@@ -733,8 +732,11 @@ void set_background_mode(int i)
       conn->set_blocking();
       if(write_buf && sizeof(write_buf))
       {
-        conn->write(write_buf);
-        write_buf = "";
+        int x = conn->write(write_buf);
+		if(x < sizeof(write_buf))
+		write_buf = write_buf[x..];
+		else
+          write_buf = "";
       }
    }
 }
@@ -1093,11 +1095,11 @@ protected void handle_subscribed(string who)
 
 protected void low_write_message(mixed id)
 {
+	if(!sizeof(write_buf)) return;
     int w = conn->write(write_buf);
     if(w < sizeof(write_buf))
       write_buf = write_buf[w..];
     else write_buf = "";
-//if(w)  WERROR("write " + w + " bytes of data.\n");
 }
 
 protected void send_msg(string msg, int|void force)
