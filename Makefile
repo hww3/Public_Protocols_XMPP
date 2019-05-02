@@ -1,18 +1,10 @@
 # $Id: Makefile.in,v 1.2 2005-07-27 21:39:23 hww3 Exp $
-@make_variables@
-VPATH=@srcdir@:
 OBJS=
 MODDIR=Public.pmod/Protocols.pmod/
 MODNAME=XMPP
-MODULE_LDFLAGS=@LDFLAGS@ @LIBS@
 MODULE_DIR_NAME=Public_Protocols_XMPP
 MODULE_NAME=Public.Protocols.XMPP
 MODULE_LICENSE=LGPL
-
-CONFIG_HEADERS=@CONFIG_HEADERS@
-
-@dynamic_module_makefile@
-@dependencies@
 
 pmar:  verify
 	mkdir ${MODULE_DIR_NAME}-1.${MIN}
