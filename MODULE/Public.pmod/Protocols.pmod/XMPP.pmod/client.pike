@@ -741,6 +741,13 @@ void set_background_mode(int i)
    }
 }
 
+// TODO: we should probably make sure we're not already sending data
+protected void send_ws() {
+  if(!conn->is_open()) return;
+  conn->write(" ");
+  call_out(send_ws, 30);
+}
+
 protected void low_read_message(int id, string data)
 {
   WERROR("received *>>" + data + "<<*\n");
@@ -780,6 +787,7 @@ protected int low_low_read_message(object node)
         negotiation_complete = 1;
         set_background_mode(1);
         if(connect_callback) connect_callback(this);
+		call_out(send_ws, 120);
       }
       else negotiate_features(kids);
    }
@@ -939,6 +947,8 @@ protected void negotiate_features(array features) {
     }
   }
   negotiation_complete = 1; // TODO be more sophisticated about knowing when we're actually done.
+  call_out(send_ws, 120);
+
   set_background_mode(1);
   if(connect_callback) 
      connect_callback(this);
