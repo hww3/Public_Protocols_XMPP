@@ -33,8 +33,8 @@ release_cvs: verify
 	rm -rf ${MODULE_DIR_NAME}-1.${MIN}
 	pike upload_module_version.pike ${MODULE_NAME} 1.${MIN} "${MODULE_LICENSE}"
 
-release: verify
-	hg tag -r tip RELEASE_1.${MIN}
+release: 
+	hg tag -fr tip RELEASE_1.${MIN}
 	hg push
 	hg archive -r RELEASE_1.${MIN} ${MODULE_DIR_NAME}-1.${MIN}
 	cd ${MODULE_DIR_NAME}-1.${MIN} && \

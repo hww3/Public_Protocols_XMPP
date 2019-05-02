@@ -1,4 +1,7 @@
-nt main(int argc, array(string) argv)
+// the original source of this file is the Tools.Monger source 
+// distribution.
+
+int main(int argc, array(string) argv)
 {
   object m = Tools.Monger.MongerDeveloper();
 
@@ -46,7 +49,7 @@ nt main(int argc, array(string) argv)
     if(lower_case(ans[0..0]) != "y") exit(1);
     
   }
-  m->set_dependency(module, version, "Pike", "8.0.0", "8.1.999", 1);
+  m->set_dependency(module, version, "Pike", "8.0.0", "8.2.999", 1);
   m->set_module_source(module, version, replace(module, ".", "_") + "-" + version + ".tar.gz");
 
   return 0;
@@ -62,13 +65,13 @@ string get_changes()
   foreach(changefile/"\n", string line)
   {
     if(!started && (Regexp("^Changes since ")->match(line)
-             || Regexp("^Version [0-9]\.[0-9].*")->match(line)))
+             || Regexp("^Version [0-9]")->match(line)))
     {
       started = 1;
       continue;
     }
     else if(started && (Regexp("^Changes since ")->match(line)
-             || Regexp("^Version [0-9]\.[0-9].*")->match(line)))
+             || Regexp("^Version [0-9]")->match(line)))
     {
       return changes;
     }
@@ -79,4 +82,3 @@ string get_changes()
 
   return changes;
 }
-
